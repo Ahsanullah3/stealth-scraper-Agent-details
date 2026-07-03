@@ -31,10 +31,10 @@ async function saveWithRetry(sheet, retries = 3) {
 
 // =========================================================
 // 2. CORE SCRAPER ENGINE 
-// Targeted Field Edition (Price, Full Addr, Link, Agent, Sold Price)
+// Targeted Field Edition (Price, Split Addr, Link, Agent, Sold Price)
 // =========================================================
 async function runScraper() {
-    console.log("🚀 Starting Targeted Stealth Scraper V9...");
+    console.log("🚀 Starting Targeted Stealth Scraper V10 (Split Address & Canonical Link)...");
 
     const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
     const serviceAccountAuth = new JWT({
@@ -47,10 +47,10 @@ async function runScraper() {
     await doc.loadInfo();
     const sheet = doc.sheetsByIndex[0];
 
-    // Ensure we have enough columns for our new layout mapping (Columns A through O)
-    if (sheet.columnCount < 15) {
-        console.log(`📏 Expanding sheet columns from ${sheet.columnCount} to 15...`);
-        await sheet.resize({ rowCount: sheet.rowCount, columnCount: 15 });
+    // Ensure we have enough columns for our new layout mapping (Columns A through R)
+    if (sheet.columnCount < 18) {
+        console.log(`📏 Expanding sheet columns from ${sheet.columnCount} to 18...`);
+        await sheet.resize({ rowCount: sheet.rowCount, columnCount: 18 });
     }
 
     await sheet.loadCells();
@@ -68,11 +68,11 @@ async function runScraper() {
     // 3. Loop through rows (rowIndex = 1 skips the header)
     for (let rowIndex = 1; rowIndex < sheet.rowCount; rowIndex++) {
 
-        const url = sheet.getCell(rowIndex, 0).value;
-        const status = sheet.getCell(rowIndex, 14).value || ""; // Status shifted to Column O
+        const originalUrl = sheet.getCell(rowIndex, 0).value;
+        const status = sheet.getCell(rowIndex, 17).value || ""; // Status shifted to Column R (index 17)
 
-        if (!url) continue; 
-        if (!url.includes("zillow.com") || status.includes("✅")) continue; 
+        if (!originalUrl) continue; 
+        if (!originalUrl.includes("zillow.com") || status.includes("✅")) continue; 
 
         if (scrapeCount >= 30) {
             console.log("🛑 Reached 30 rows. Shutting down to rotate environment...");
@@ -81,7 +81,7 @@ async function runScraper() {
         }
 
         const actualRowNumber = rowIndex + 1;
-        console.log(`🕵️ Scraping Row ${actualRowNumber}: ${url}`);
+        console.log(`🕵️ Scraping Row ${actualRowNumber}: ${originalUrl}`);
 
         const page = await browser.newPage();
 
@@ -96,22 +96,25 @@ async function runScraper() {
             });
 
             await delay(Math.floor(Math.random() * 500) + 500);
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto(originalUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
             const pageTitle = await page.title();
             if (pageTitle.includes("Pardon Our Interruption") || pageTitle.includes("Robot Check")) {
                 console.log(`❌ BLOCKED: IP has been flagged on Row ${actualRowNumber}`);
-                sheet.getCell(rowIndex, 14).value = "❌ BLOCKED (IP Burned)";
+                sheet.getCell(rowIndex, 17).value = "❌ BLOCKED (IP Burned)";
                 await saveWithRetry(sheet);
                 await page.close();
                 continue;
             }
 
-            // 4. Extract target parameters from Next.js payload
+            // 4. Extract target parameters from Next.js payload & Canonical Tag
             const extractedData = await page.evaluate(() => {
-                let data = { price: "", fullAddress: "", agentDetails: "", soldPrice: "" };
-                const nextDataScript = document.querySelector('script#__NEXT_DATA__');
+                let data = { price: "", street: "", city: "", state: "", zipcode: "", agentDetails: "", soldPrice: "", zillowLink: "" };
                 
+                // Native DOM extraction for canonical URL
+                data.zillowLink = document.querySelector('meta[property="og:url"]')?.content || "";
+
+                const nextDataScript = document.querySelector('script#__NEXT_DATA__');
                 if (!nextDataScript) return data;
 
                 try {
@@ -125,15 +128,6 @@ async function runScraper() {
                     
                     if (!p) return data;
 
-                    // Compile Full Address
-                    const street = p.address?.streetAddress || p.streetAddress || "";
-                    const city = p.address?.city || p.city || "";
-                    const state = p.address?.state || p.state || "";
-                    const zip = p.address?.zipcode || p.zipcode || "";
-                    
-                    // Filter out empty strings and join with a comma
-                    const fullAddrString = [street, city, state, zip].filter(Boolean).join(", ");
-
                     // Formulate Agent Details
                     let agentString = "";
                     if (p.attributionInfo) {
@@ -143,32 +137,40 @@ async function runScraper() {
                         agentString = `${name} | ${broker} | ${phone}`.replace(/^ \| | \| $/g, '').trim();
                     }
 
-                    data = {
-                        price: p.price || "",
-                        fullAddress: fullAddrString || "N/A",
-                        agentDetails: agentString || "N/A",
-                        soldPrice: p.lastSoldPrice || ""
-                    };
+                    data.price = p.price || "";
+                    data.street = p.address?.streetAddress || p.streetAddress || "";
+                    data.city = p.address?.city || p.city || "";
+                    data.state = p.address?.state || p.state || "";
+                    data.zipcode = p.address?.zipcode || p.zipcode || "";
+                    data.agentDetails = agentString || "N/A";
+                    data.soldPrice = p.lastSoldPrice || "";
+
                 } catch (e) {}
 
                 return data;
             });
 
-            // 5. Layout Memory Map (Columns J, K, L, M, N, O)
-            sheet.getCell(rowIndex, 9).value = extractedData.price;            // Column J: Price
-            sheet.getCell(rowIndex, 10).value = extractedData.fullAddress;     // Column K: Full Address
-            sheet.getCell(rowIndex, 11).value = url;                           // Column L: Zillow Link
-            sheet.getCell(rowIndex, 12).value = extractedData.agentDetails;    // Column M: Agent Details
-            sheet.getCell(rowIndex, 13).value = extractedData.soldPrice;       // Column N: Sold Price
-            sheet.getCell(rowIndex, 14).value = "✅ SUCCESS";                 // Column O: Status Tracker
+            // If the canonical extraction fails, fall back to the original URL
+            const finalUrl = extractedData.zillowLink || originalUrl;
+
+            // 5. Layout Memory Map (Columns J through R)
+            sheet.getCell(rowIndex, 9).value = extractedData.price;           // Column J: Price
+            sheet.getCell(rowIndex, 10).value = extractedData.street;         // Column K: Street
+            sheet.getCell(rowIndex, 11).value = extractedData.city;           // Column L: City
+            sheet.getCell(rowIndex, 12).value = extractedData.state;          // Column M: State
+            sheet.getCell(rowIndex, 13).value = extractedData.zipcode;        // Column N: Zipcode
+            sheet.getCell(rowIndex, 14).value = finalUrl;                     // Column O: Canonical Zillow Link
+            sheet.getCell(rowIndex, 15).value = extractedData.agentDetails;   // Column P: Agent Details
+            sheet.getCell(rowIndex, 16).value = extractedData.soldPrice;      // Column Q: Sold Price
+            sheet.getCell(rowIndex, 17).value = "✅ SUCCESS";                 // Column R: Status Tracker
 
             stagedCellsToSave.push(rowIndex);
-            console.log(`✔️ Staged Row ${actualRowNumber} | 💰 Price: ${extractedData.price} | 📍 Addr: ${extractedData.fullAddress}`);
+            console.log(`✔️ Staged Row ${actualRowNumber} | 💰 ${extractedData.price} | 📍 ${extractedData.city}, ${extractedData.state}`);
             scrapeCount++;
 
         } catch (e) {
             console.error(`🛑 Error on Row ${actualRowNumber}: ${e.message}`);
-            sheet.getCell(rowIndex, 14).value = "🛑 Error: " + e.message;
+            sheet.getCell(rowIndex, 17).value = "🛑 Error: " + e.message;
             stagedCellsToSave.push(rowIndex);
         } finally {
             await page.close();
