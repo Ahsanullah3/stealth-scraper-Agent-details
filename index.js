@@ -31,10 +31,10 @@ async function saveWithRetry(sheet, retries = 3) {
 
 // =========================================================
 // 2. CORE SCRAPER ENGINE 
-// Targeted Field Edition (Price, Split Addr, Link, Agent, Sold Price)
+// Targeted Field Edition (Price, Split Addr, Link, Agent, Sold Price, Description)
 // =========================================================
 async function runScraper() {
-    console.log("🚀 Starting Targeted Stealth Scraper V10 (Split Address & Canonical Link)...");
+    console.log("🚀 Starting Targeted Stealth Scraper V10 (Split Address, Canonical Link & Description)...");
 
     const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
     const serviceAccountAuth = new JWT({
@@ -47,10 +47,10 @@ async function runScraper() {
     await doc.loadInfo();
     const sheet = doc.sheetsByIndex[0];
 
-    // Ensure we have enough columns for our new layout mapping (Columns A through R)
-    if (sheet.columnCount < 18) {
-        console.log(`📏 Expanding sheet columns from ${sheet.columnCount} to 18...`);
-        await sheet.resize({ rowCount: sheet.rowCount, columnCount: 18 });
+    // Ensure we have enough columns for our new layout mapping (Columns A through S)
+    if (sheet.columnCount < 19) {
+        console.log(`📏 Expanding sheet columns from ${sheet.columnCount} to 19...`);
+        await sheet.resize({ rowCount: sheet.rowCount, columnCount: 19 });
     }
 
     await sheet.loadCells();
@@ -109,7 +109,7 @@ async function runScraper() {
 
             // 4. Extract target parameters from Next.js payload & Canonical Tag
             const extractedData = await page.evaluate(() => {
-                let data = { price: "", street: "", city: "", state: "", zipcode: "", agentDetails: "", soldPrice: "", zillowLink: "" };
+                let data = { price: "", street: "", city: "", state: "", zipcode: "", agentDetails: "", soldPrice: "", zillowLink: "", description: "" };
                 
                 // Native DOM extraction for canonical URL
                 data.zillowLink = document.querySelector('meta[property="og:url"]')?.content || "";
@@ -128,13 +128,22 @@ async function runScraper() {
                     
                     if (!p) return data;
 
-                    // Formulate Agent Details
+                    // Formulate Agent Details & Format Phone Number strictly to (###) ###-####
                     let agentString = "";
                     if (p.attributionInfo) {
                         const name = p.attributionInfo.agentName || "";
                         const broker = p.attributionInfo.brokerName || "";
-                        const phone = p.attributionInfo.agentPhoneNumber || "";
-                        agentString = `${name} | ${broker} | ${phone}`.replace(/^ \| | \| $/g, '').trim();
+                        let rawPhone = p.attributionInfo.agentPhoneNumber || p.contactPhone || "";
+                        
+                        let formattedPhone = rawPhone;
+                        if (rawPhone) {
+                            let digits = rawPhone.replace(/^\+1/, '').replace(/\D/g, '');
+                            if (digits.length === 10) {
+                                formattedPhone = `(${digits.substring(0, 3)}) ${digits.substring(3, 6)}-${digits.substring(6, 10)}`;
+                            }
+                        }
+
+                        agentString = `${name} | ${broker} | ${formattedPhone}`.replace(/^ \| | \| $/g, '').trim();
                     }
 
                     data.price = p.price || "";
@@ -144,6 +153,9 @@ async function runScraper() {
                     data.zipcode = p.address?.zipcode || p.zipcode || "";
                     data.agentDetails = agentString || "N/A";
                     data.soldPrice = p.lastSoldPrice || "";
+                    
+                    // Extract Description with fallback
+                    data.description = p.description || p.homeDescription || "N/A";
 
                 } catch (e) {}
 
@@ -153,16 +165,17 @@ async function runScraper() {
             // If the canonical extraction fails, fall back to the original URL
             const finalUrl = extractedData.zillowLink || originalUrl;
 
-            // 5. Layout Memory Map (Columns J through R)
-            sheet.getCell(rowIndex, 9).value = extractedData.price;           // Column J: Price
-            sheet.getCell(rowIndex, 10).value = extractedData.street;         // Column K: Street
-            sheet.getCell(rowIndex, 11).value = extractedData.city;           // Column L: City
-            sheet.getCell(rowIndex, 12).value = extractedData.state;          // Column M: State
-            sheet.getCell(rowIndex, 13).value = extractedData.zipcode;        // Column N: Zipcode
-            sheet.getCell(rowIndex, 14).value = finalUrl;                     // Column O: Canonical Zillow Link
-            sheet.getCell(rowIndex, 15).value = extractedData.agentDetails;   // Column P: Agent Details
-            sheet.getCell(rowIndex, 16).value = extractedData.soldPrice;      // Column Q: Sold Price
-            sheet.getCell(rowIndex, 17).value = "✅ SUCCESS";                 // Column R: Status Tracker
+            // 5. Layout Memory Map (Columns J through S)
+            sheet.getCell(rowIndex, 9).value = extractedData.price;            // Column J: Price
+            sheet.getCell(rowIndex, 10).value = extractedData.street;          // Column K: Street
+            sheet.getCell(rowIndex, 11).value = extractedData.city;            // Column L: City
+            sheet.getCell(rowIndex, 12).value = extractedData.state;           // Column M: State
+            sheet.getCell(rowIndex, 13).value = extractedData.zipcode;         // Column N: Zipcode
+            sheet.getCell(rowIndex, 14).value = finalUrl;                      // Column O: Canonical Zillow Link
+            sheet.getCell(rowIndex, 15).value = extractedData.agentDetails;    // Column P: Agent Details
+            sheet.getCell(rowIndex, 16).value = extractedData.soldPrice;       // Column Q: Sold Price
+            sheet.getCell(rowIndex, 17).value = "✅ SUCCESS";                  // Column R: Status Tracker
+            sheet.getCell(rowIndex, 18).value = extractedData.description;     // Column S: Description
 
             stagedCellsToSave.push(rowIndex);
             console.log(`✔️ Staged Row ${actualRowNumber} | 💰 ${extractedData.price} | 📍 ${extractedData.city}, ${extractedData.state}`);
